@@ -1,7 +1,7 @@
 /* ----------------------------------------------------------------------
    SPARTA - Stochastic PArallel Rarefied-gas Time-accurate Analyzer
-   http://sparta.github.io
-   Steve Plimpton, sjplimp@gmail.com, Michael Gallis, magalli@sandia.gov
+   http://sparta.sandia.gov
+   Steve Plimpton, sjplimp@sandia.gov, Michael Gallis, magalli@sandia.gov
    Sandia National Laboratories
 
    Copyright (2014) Sandia Corporation.  Under the terms of Contract
@@ -54,7 +54,9 @@ class Mixture : protected Pointers {
   double *fraction_user;      // user fractional value
 
   // set by init()
-
+  // Virgile - Modif Start - 26/04/2023
+  double *cummulative_weighted;        // weighted cummulative fraction for each species
+  // Virgile - Modif End - 26/04/2023
   double *cummulative;        // cummulative fraction for each species
   int *groupsize;             // # of species in each group
   int **groupspecies;         // list of particle species indices in each group
@@ -70,7 +72,12 @@ class Mixture : protected Pointers {
   void copy(Mixture *);
   void command(int, char **);
   void init();
-  int init_fraction(int *, double *, double *, double *);
+  // Virgile - Modif Start - 26/04/2023
+  // Baseline code:
+  //int init_fraction(int *, double *, double *, double *);
+  // Modified code:
+  int init_fraction(int *, double *, double *, double *, double *);
+  // Virgile - Modif End - 26/04/2023
   void add_species_default(char *);
   int find_group(const char *);
   void write_restart(FILE *fp);

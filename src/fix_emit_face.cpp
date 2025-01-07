@@ -1,7 +1,7 @@
 /* ----------------------------------------------------------------------
    SPARTA - Stochastic PArallel Rarefied-gas Time-accurate Analyzer
-   http://sparta.github.io
-   Steve Plimpton, sjplimp@gmail.com, Michael Gallis, magalli@sandia.gov
+   http://sparta.sandia.gov
+   Steve Plimpton, sjplimp@sandia.gov, Michael Gallis, magalli@sandia.gov
    Sandia National Laboratories
 
    Copyright (2014) Sandia Corporation.  Under the terms of Contract
@@ -63,8 +63,8 @@ FixEmitFace::FixEmitFace(SPARTA *sparta, int narg, char **arg) :
   while (iarg < narg) {
     if (strcmp(arg[iarg],"all") == 0) {
       if (domain->dimension == 3)
-        faces[XLO] = faces[XHI] = faces[YLO] = faces[YHI] =
-          faces[ZLO] = faces[ZHI] = 1;
+	faces[XLO] = faces[XHI] = faces[YLO] = faces[YHI] =
+	  faces[ZLO] = faces[ZHI] = 1;
       else faces[XLO] = faces[XHI] = faces[YLO] = faces[YHI] = 1;
     } else if (strcmp(arg[iarg],"xlo") == 0) faces[XLO] = 1;
     else if (strcmp(arg[iarg],"xhi") == 0) faces[XHI] = 1;
@@ -141,6 +141,9 @@ void FixEmitFace::init()
   nspecies = particle->mixture[imix]->nspecies;
   fraction = particle->mixture[imix]->fraction;
   cummulative = particle->mixture[imix]->cummulative;
+  // Virgile - Modif Start - 26/04/2023
+  cummulative_weighted = particle->mixture[imix]->cummulative_weighted;
+  // Virgile - Modif End - 26/04/2023
 
   // subsonic prefactor
 
@@ -157,7 +160,7 @@ void FixEmitFace::init()
     avegamma += fraction[m] * (1.0 + 2.0 /
                                (3.0 + particle->species[ispecies].rotdof));
   }
-
+  
   soundspeed_mixture = sqrt(avegamma * update->boltz *
                             particle->mixture[imix]->temp_thermal / avemass);
 
@@ -261,12 +264,13 @@ void FixEmitFace::create_task(int icell)
   // works for 2d quads and 3d hexes
 
   int corners[6][4] = {{0,2,4,6}, {1,3,5,7}, {0,1,4,5}, {2,3,6,7},
-                       {0,1,2,3}, {4,5,6,7}};
+		       {0,1,2,3}, {4,5,6,7}};
   int nface_pts = 4;
   if (domain->dimension == 2) nface_pts = 2;
 
   // loop over 6 faces of icell
 
+  int ntaskorig = ntask;
   int nmask = cells[icell].nmask;
 
   for (i = 0; i < 6; i++) {
@@ -401,18 +405,27 @@ void FixEmitFace::create_task(int icell)
       else area = cells[icell].hi[0]-cells[icell].lo[0];
     } else if (iface == ZLO || iface == ZHI) {
       area = (cells[icell].hi[0]-cells[icell].lo[0]) *
-        (cells[icell].hi[1]-cells[icell].lo[1]);
+	(cells[icell].hi[1]-cells[icell].lo[1]);
     }
     tasks[ntask].area = area;
 
     // set ntarget and ntargetsp via mol_inflow()
     // skip task if final ntarget = 0.0, due to large outbound vstream
     // do not skip for subsonic since it resets ntarget every step
-
+    
     tasks[ntask].ntarget = 0.0;
     for (isp = 0; isp < nspecies; isp++) {
       ntargetsp = mol_inflow(indot,vscale[isp],fraction[isp]);
-      ntargetsp *= nrho*area*dt / fnum;
+    // Virgile - Modif Start - 25/09/23
+    // ========================================================================
+    // Modify the number of numerical particle to create per species
+    // accounting for the species weights.
+    // ========================================================================
+    // Baseline code:
+      //~ ntargetsp *= nrho*area*dt / fnum;
+    // Modified code:
+      ntargetsp *= nrho*area*dt / (fnum*particle->species[isp].specwt);
+    // Virgile - Modif End - 25/09/23
       ntargetsp /= cinfo[icell].weight;
       tasks[ntask].ntarget += ntargetsp;
       if (perspecies) tasks[ntask].ntargetsp[isp] = ntargetsp;
@@ -516,28 +529,28 @@ void FixEmitFace::perform_task_onepass()
     if (perspecies) {
       for (isp = 0; isp < nspecies; isp++) {
         ispecies = species[isp];
-        ntarget = tasks[i].ntargetsp[isp]+random->uniform();
-        ninsert = static_cast<int> (ntarget);
+	ntarget = tasks[i].ntargetsp[isp]+random->uniform();
+	ninsert = static_cast<int> (ntarget);
         scosine = indot / vscale[isp];
 
         nactual = 0;
-        for (int m = 0; m < ninsert; m++) {
-          x[0] = lo[0] + random->uniform() * (hi[0]-lo[0]);
-          x[1] = lo[1] + random->uniform() * (hi[1]-lo[1]);
-          if (dimension == 3) x[2] = lo[2] + random->uniform() * (hi[2]-lo[2]);
+	for (int m = 0; m < ninsert; m++) {
+	  x[0] = lo[0] + random->uniform() * (hi[0]-lo[0]);
+	  x[1] = lo[1] + random->uniform() * (hi[1]-lo[1]);
+	  if (dimension == 3) x[2] = lo[2] + random->uniform() * (hi[2]-lo[2]);
           else x[2] = 0.0;
 
           if (region && !region->match(x)) continue;
 
-          do {
-            do beta_un = (6.0*random->uniform() - 3.0);
-            while (beta_un + scosine < 0.0);
-            normalized_distbn_fn = 2.0 * (beta_un + scosine) /
-              (scosine + sqrt(scosine*scosine + 2.0)) *
-              exp(0.5 + (0.5*scosine)*(scosine-sqrt(scosine*scosine + 2.0)) -
-                  beta_un*beta_un);
-          } while (normalized_distbn_fn < random->uniform());
-
+	  do {
+	    do beta_un = (6.0*random->uniform() - 3.0);
+	    while (beta_un + scosine < 0.0);
+	    normalized_distbn_fn = 2.0 * (beta_un + scosine) /
+	      (scosine + sqrt(scosine*scosine + 2.0)) *
+	      exp(0.5 + (0.5*scosine)*(scosine-sqrt(scosine*scosine + 2.0)) -
+		  beta_un*beta_un);
+	  } while (normalized_distbn_fn < random->uniform());
+	
           v[ndim] = beta_un*vscale[isp]*normal[ndim] + vstream[ndim];
 
           theta = MY_2PI * random->uniform();
@@ -548,7 +561,7 @@ void FixEmitFace::perform_task_onepass()
           evib = particle->evib(ispecies,temp_vib,random);
           id = MAXSMALLINT*random->uniform();
 
-          particle->add_particle(id,ispecies,pcell,x,v,erot,evib);
+	  particle->add_particle(id,ispecies,pcell,x,v,erot,evib);
           nactual++;
 
           p = &particle->particles[particle->nlocal-1];
@@ -558,45 +571,50 @@ void FixEmitFace::perform_task_onepass()
           if (nfix_update_custom)
             modify->update_custom(particle->nlocal-1,temp_thermal,
                                  temp_rot,temp_vib,vstream);
-        }
+	}
 
-        nsingle += nactual;
+	nsingle += nactual;
       }
 
     } else {
       if (np == 0) {
-        ntarget = tasks[i].ntarget+random->uniform();
-        ninsert = static_cast<int> (ntarget);
+	ntarget = tasks[i].ntarget+random->uniform();
+	ninsert = static_cast<int> (ntarget);
       } else {
-        ninsert = npertask;
-        if (i >= nthresh) ninsert++;
+	ninsert = npertask;
+	if (i >= nthresh) ninsert++;
       }
 
       nactual = 0;
       for (int m = 0; m < ninsert; m++) {
-        rn = random->uniform();
-        isp = 0;
-        while (cummulative[isp] < rn) isp++;
+	rn = random->uniform();
+	isp = 0;
+  // Virgile - Modif Start - 26/04/2023
+  // Baseline code:
+	//while (cummulative[isp] < rn) isp++;
+	// Modified code:
+  while (cummulative_weighted[isp] < rn) isp++;
+  // Virgile - Modif End - 26/04/2023
         ispecies = species[isp];
         scosine = indot / vscale[isp];
 
-        x[0] = lo[0] + random->uniform() * (hi[0]-lo[0]);
-        x[1] = lo[1] + random->uniform() * (hi[1]-lo[1]);
+	x[0] = lo[0] + random->uniform() * (hi[0]-lo[0]);
+	x[1] = lo[1] + random->uniform() * (hi[1]-lo[1]);
         if (dimension == 3) x[2] = lo[2] + random->uniform() * (hi[2]-lo[2]);
         else x[2] = 0.0;
 
         if (region && !region->match(x)) continue;
 
-        do {
-          do {
-            beta_un = (6.0*random->uniform() - 3.0);
-          } while (beta_un + scosine < 0.0);
-          normalized_distbn_fn = 2.0 * (beta_un + scosine) /
-            (scosine + sqrt(scosine*scosine + 2.0)) *
-            exp(0.5 + (0.5*scosine)*(scosine-sqrt(scosine*scosine + 2.0)) -
-                beta_un*beta_un);
-        } while (normalized_distbn_fn < random->uniform());
-
+	do {
+	  do {
+	    beta_un = (6.0*random->uniform() - 3.0);
+	  } while (beta_un + scosine < 0.0);
+	  normalized_distbn_fn = 2.0 * (beta_un + scosine) /
+	    (scosine + sqrt(scosine*scosine + 2.0)) *
+	    exp(0.5 + (0.5*scosine)*(scosine-sqrt(scosine*scosine + 2.0)) -
+		beta_un*beta_un);
+	} while (normalized_distbn_fn < random->uniform());
+	
         v[ndim] = beta_un*vscale[isp]*normal[ndim] + vstream[ndim];
 
         theta = MY_2PI * random->uniform();
@@ -607,7 +625,7 @@ void FixEmitFace::perform_task_onepass()
         evib = particle->evib(ispecies,temp_vib,random);
         id = MAXSMALLINT*random->uniform();
 
-        particle->add_particle(id,ispecies,pcell,x,v,erot,evib);
+	particle->add_particle(id,ispecies,pcell,x,v,erot,evib);
         nactual++;
 
         p = &particle->particles[particle->nlocal-1];
@@ -763,7 +781,12 @@ void FixEmitFace::perform_task_twopass()
       for (int m = 0; m < ninsert; m++) {
         rn = random->uniform();
         isp = 0;
-        while (cummulative[isp] < rn) isp++;
+        // Virgile - Modif Start - 26/04/2023
+        // Baseline code:
+        //while (cummulative[isp] < rn) isp++;
+        // Modified code:
+        while (cummulative_weighted[isp] < rn) isp++;
+        // Virgile - Modif End - 26/04/2023
         ispecies = species[isp];
         scosine = indot / vscale[isp];
 
@@ -809,7 +832,7 @@ void FixEmitFace::perform_task_twopass()
       nsingle += nactual;
     }
   }
-
+  
   memory->destroy(ninsert_values);
 }
 
@@ -887,7 +910,16 @@ void FixEmitFace::subsonic_inflow()
       mass = species[mspecies[isp]].mass;
       vscale = sqrt(2.0 * boltz * temp_thermal / mass);
       ntargetsp = mol_inflow(indot,vscale,fraction[isp]);
-      ntargetsp *= nrho*area*dt / fnum;
+    // Virgile - Modif Start - 25/09/23
+    // ========================================================================
+    // Modify the number of numerical particle to create per species
+    // accounting for the species weights.
+    // ========================================================================
+    // Baseline code:
+      //~ ntargetsp *= nrho*area*dt / fnum;
+    // Modified code:
+      ntargetsp *= nrho*area*dt / (fnum*particle->species[isp].specwt);
+    // Virgile - Modif End - 25/09/23
       ntargetsp /= cinfo[icell].weight;
       tasks[i].ntarget += ntargetsp;
       if (perspecies) tasks[i].ntargetsp[isp] = ntargetsp;
@@ -964,6 +996,13 @@ void FixEmitFace::subsonic_grid()
 {
   int m,ip,np,icell,ispecies,ndim;
   double mass,masstot,gamma,ke,sign;
+  // Virgile - Modif Start - 25/09/23
+  // ========================================================================
+  // Add the total weighted mass variable to the accumulated variable to
+  // compute.
+  // ========================================================================
+  double masstot_wi;
+  // Virgile - Modif End - 25/09/23
   double nrho_cell,massrho_cell,temp_thermal_cell,press_cell;
   double mass_cell,gamma_cell,soundspeed_cell;
   double mv[4];
@@ -988,6 +1027,9 @@ void FixEmitFace::subsonic_grid()
 
     mv[0] = mv[1] = mv[2] = mv[3] = 0.0;
     masstot = gamma = 0.0;
+    // Virgile - Modif Start - 25/09/23
+    masstot_wi = 0.0;
+    // Virgile - Modif End - 25/09/23
 
     ip = cinfo[icell].first;
     while (ip >= 0) {
@@ -999,6 +1041,9 @@ void FixEmitFace::subsonic_grid()
       mv[2] += mass*v[2];
       mv[3] += mass * (v[0]*v[0]+v[1]*v[1]+v[2]*v[2]);
       masstot += mass;
+      // Virgile - Modif Start - 25/09/23
+      masstot_wi += mass*species[ispecies].specwt;
+      // Virgile - Modif End - 25/09/23
       gamma += 1.0 + 2.0 / (3.0 + species[ispecies].rotdof);
       ip = next[ip];
     }
@@ -1020,8 +1065,21 @@ void FixEmitFace::subsonic_grid()
       temp_thermal_cell = tsubsonic;
 
     } else {
-      nrho_cell = np * fnum / cinfo[icell].volume;
-      massrho_cell = masstot * fnum / cinfo[icell].volume;
+      // Virgile - Modif Start - 25/09/23
+      // ========================================================================
+      // Using the species weighting scheme, the total number of 
+      // physical particles is given by:
+      // Sum (wi*fnum) = cinfo[icell].count_wi * fnum
+      // and the total mass by:
+      // Sum (mi*wi*fnum) = masstot_wi * fnum
+      // ========================================================================
+      // Baseline code:
+      //~ nrho_cell = np * fnum / cinfo[icell].volume;
+      //~ massrho_cell = masstot * fnum / cinfo[icell].volume;
+      // Modified code:
+      nrho_cell = cinfo[icell].count_wi  * fnum / cinfo[icell].volume;
+      massrho_cell = masstot_wi * fnum / cinfo[icell].volume;
+      // Virgile - Modif End - 25/09/23
       if (np > 1) {
         ke = mv[3]/np - (mv[0]*mv[0] + mv[1]*mv[1] + mv[2]*mv[2])/np/masstot;
         temp_thermal_cell = tprefactor * ke;
@@ -1076,7 +1134,7 @@ void FixEmitFace::grow_task()
   int oldmax = ntaskmax;
   ntaskmax += DELTATASK;
   tasks = (Task *) memory->srealloc(tasks,ntaskmax*sizeof(Task),
-                                    "emit/face:tasks");
+				    "emit/face:tasks");
 
   // set all new task bytes to 0 so valgrind won't complain
   // if bytes between fields are uninitialized

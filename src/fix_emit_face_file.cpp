@@ -1,7 +1,7 @@
 /* ----------------------------------------------------------------------
    SPARTA - Stochastic PArallel Rarefied-gas Time-accurate Analyzer
-   http://sparta.github.io
-   Steve Plimpton, sjplimp@gmail.com, Michael Gallis, magalli@sandia.gov
+   http://sparta.sandia.gov
+   Steve Plimpton, sjplimp@sandia.gov, Michael Gallis, magalli@sandia.gov
    Sandia National Laboratories
 
    Copyright (2014) Sandia Corporation.  Under the terms of Contract
@@ -45,7 +45,7 @@ enum{NOSUBSONIC,PTBOTH,PONLY};
 
 #define DELTATASK 256
 #define TEMPLIMIT 1.0e5
-#define MAXLINE 16384
+#define MAXLINE 1024
 
 /* ---------------------------------------------------------------------- */
 
@@ -141,6 +141,9 @@ FixEmitFaceFile::~FixEmitFaceFile()
     delete [] tasks[i].vscale;
     delete [] tasks[i].fraction;
     delete [] tasks[i].cummulative;
+    // Virgile - Modif Start - 26/04/2023
+    delete [] tasks[i].cummulative_weighted;
+    // Virgile - Modif End - 26/04/2023
   }
   memory->sfree(tasks);
   memory->destroy(activecell);
@@ -173,6 +176,9 @@ void FixEmitFaceFile::init()
   fraction_mix = particle->mixture[imix]->fraction;
   fraction_flag_mix = particle->mixture[imix]->fraction_flag;
   fraction_user_mix = particle->mixture[imix]->fraction_user;
+  // Virgile - Modif Start - 26/04/2023
+  cummulative_weighted_mix = particle->mixture[imix]->cummulative_weighted;
+  // Virgile - Modif End - 26/04/2023
   cummulative_mix = particle->mixture[imix]->cummulative;
   species2species_mix = particle->mixture[imix]->species2species;
 
@@ -221,6 +227,10 @@ void FixEmitFaceFile::init()
     delete [] tasks[i].fraction;
     delete [] tasks[i].cummulative;
     delete [] tasks[i].vscale;
+    // Virgile - Modif Start - 26/04/2023
+    delete [] tasks[i].cummulative_weighted;
+    tasks[i].cummulative_weighted = new double[nspecies];
+    // Virgile - Modif End - 26/04/2023
     tasks[i].fraction = new double[nspecies];
     tasks[i].cummulative = new double[nspecies];
     tasks[i].vscale = new double[nspecies];
@@ -265,7 +275,7 @@ void FixEmitFaceFile::create_task(int icell)
   // works for 2d quads and 3d hexes
 
   int corners[6][4] = {{0,2,4,6}, {1,3,5,7}, {0,1,4,5}, {2,3,6,7},
-                       {0,1,2,3}, {4,5,6,7}};
+		       {0,1,2,3}, {4,5,6,7}};
   int nface_pts = 4;
   if (domain->dimension == 2) nface_pts = 2;
 
@@ -351,6 +361,9 @@ void FixEmitFaceFile::perform_task()
   double beta_un,normalized_distbn_fn,theta,erot,evib;
   double x[3],v[3];
   double *lo,*hi,*vstream,*cummulative,*vscale;
+  // Virgile - Modif Start - 26/04/2023
+  double *cummulative_weighted;
+  // Virgile - Modif End - 26/04/2023
   Particle::OnePart *p;
 
   double dt = update->dt;
@@ -395,28 +408,28 @@ void FixEmitFaceFile::perform_task()
     if (perspecies) {
       for (isp = 0; isp < nspecies; isp++) {
         ispecies = species[isp];
-        ntarget = tasks[i].ntargetsp[isp]+random->uniform();
-        ninsert = static_cast<int> (ntarget);
+	ntarget = tasks[i].ntargetsp[isp]+random->uniform();
+	ninsert = static_cast<int> (ntarget);
         scosine = indot / vscale[isp];
 
         nactual = 0;
-        for (int m = 0; m < ninsert; m++) {
-          x[0] = lo[0] + random->uniform() * (hi[0]-lo[0]);
-          x[1] = lo[1] + random->uniform() * (hi[1]-lo[1]);
-          if (dimension == 3) x[2] = lo[2] + random->uniform() * (hi[2]-lo[2]);
+	for (int m = 0; m < ninsert; m++) {
+	  x[0] = lo[0] + random->uniform() * (hi[0]-lo[0]);
+	  x[1] = lo[1] + random->uniform() * (hi[1]-lo[1]);
+	  if (dimension == 3) x[2] = lo[2] + random->uniform() * (hi[2]-lo[2]);
           else x[2] = 0.0;
 
           if (region && !region->match(x)) continue;
 
-          do {
-            do beta_un = (6.0*random->uniform() - 3.0);
-            while (beta_un + scosine < 0.0);
-            normalized_distbn_fn = 2.0 * (beta_un + scosine) /
-              (scosine + sqrt(scosine*scosine + 2.0)) *
-              exp(0.5 + (0.5*scosine)*(scosine-sqrt(scosine*scosine + 2.0)) -
-                  beta_un*beta_un);
-          } while (normalized_distbn_fn < random->uniform());
-
+	  do {
+	    do beta_un = (6.0*random->uniform() - 3.0);
+	    while (beta_un + scosine < 0.0);
+	    normalized_distbn_fn = 2.0 * (beta_un + scosine) /
+	      (scosine + sqrt(scosine*scosine + 2.0)) *
+	      exp(0.5 + (0.5*scosine)*(scosine-sqrt(scosine*scosine + 2.0)) -
+		  beta_un*beta_un);
+	  } while (normalized_distbn_fn < random->uniform());
+	
           v[ndim] = beta_un*vscale[isp]*normal[ndim] + vstream[ndim];
 
           theta = MY_2PI * random->uniform();
@@ -427,7 +440,7 @@ void FixEmitFaceFile::perform_task()
           evib = particle->evib(ispecies,temp_vib,random);
           id = MAXSMALLINT*random->uniform();
 
-          particle->add_particle(id,ispecies,pcell,x,v,erot,evib);
+	  particle->add_particle(id,ispecies,pcell,x,v,erot,evib);
           nactual++;
 
           p = &particle->particles[particle->nlocal-1];
@@ -437,40 +450,48 @@ void FixEmitFaceFile::perform_task()
           if (nfix_update_custom)
             modify->update_custom(particle->nlocal-1,temp_thermal,
                                  temp_rot,temp_vib,vstream);
-        }
+	}
 
-        nsingle += nactual;
+	nsingle += nactual;
       }
 
     } else {
+      // Virgile - Modif Start - 26/04/2023
+      cummulative_weighted = tasks[i].cummulative_weighted;
+      // Virgile - Modif End - 26/04/2023
       cummulative = tasks[i].cummulative;
       ntarget = tasks[i].ntarget+random->uniform();
       ninsert = static_cast<int> (ntarget);
 
       nactual = 0;
       for (int m = 0; m < ninsert; m++) {
-        rn = random->uniform();
-        isp = 0;
-        while (cummulative[isp] < rn) isp++;
+	rn = random->uniform();
+	isp = 0;
+  // Virgile - Modif Start - 26/04/2023
+  // Baseline code:
+	//while (cummulative[isp] < rn) isp++;
+  // Modified code:
+  while (cummulative_weighted[isp] < rn) isp++;
+  // Virgile - Modif Start - 26/04/2023
         ispecies = species[isp];
         scosine = indot / vscale[isp];
 
-        x[0] = lo[0] + random->uniform() * (hi[0]-lo[0]);
-        x[1] = lo[1] + random->uniform() * (hi[1]-lo[1]);
-        if (dimension == 3) x[2] = lo[2] + random->uniform() * (hi[2]-lo[2]);
+	x[0] = lo[0] + random->uniform() * (hi[0]-lo[0]);
+	x[1] = lo[1] + random->uniform() * (hi[1]-lo[1]);
+	if (dimension == 3) x[2] = lo[2] + random->uniform() * (hi[2]-lo[2]);
         else x[2] = 0.0;
 
         if (region && !region->match(x)) continue;
 
-        do {
-          do beta_un = (6.0*random->uniform() - 3.0);
-          while (beta_un + scosine < 0.0);
-          normalized_distbn_fn = 2.0 * (beta_un + scosine) /
-            (scosine + sqrt(scosine*scosine + 2.0)) *
-            exp(0.5 + (0.5*scosine)*(scosine-sqrt(scosine*scosine + 2.0)) -
-                beta_un*beta_un);
-        } while (normalized_distbn_fn < random->uniform());
-
+	do {
+	  do beta_un = (6.0*random->uniform() - 3.0);
+	  while (beta_un + scosine < 0.0);
+	  normalized_distbn_fn = 2.0 * (beta_un + scosine) /
+	    (scosine + sqrt(scosine*scosine + 2.0)) *
+	    exp(0.5 + (0.5*scosine)*(scosine-sqrt(scosine*scosine + 2.0)) -
+		beta_un*beta_un);
+	} while (normalized_distbn_fn < random->uniform());
+	
         v[ndim] = beta_un*vscale[isp]*normal[ndim] + vstream[ndim];
 
         theta = MY_PI * random->uniform();
@@ -481,7 +502,7 @@ void FixEmitFaceFile::perform_task()
         evib = particle->evib(ispecies,temp_vib,random);
         id = MAXSMALLINT*random->uniform();
 
-        particle->add_particle(id,ispecies,pcell,x,v,erot,evib);
+	particle->add_particle(id,ispecies,pcell,x,v,erot,evib);
         nactual++;
 
         p = &particle->particles[particle->nlocal-1];
@@ -507,7 +528,7 @@ void FixEmitFaceFile::read_file(char *file, char *section)
 {
   int i,m,n,ii,jj,offset;
   char line[MAXLINE];
-  char *word,*tmp;
+  char *word;
 
   int dimension = domain->dimension;
 
@@ -530,33 +551,33 @@ void FixEmitFaceFile::read_file(char *file, char *section)
     word = strtok(line," \t\n\r");
     if (strcmp(word,section) == 0) break;           // matching keyword
 
-    tmp = fgets(line,MAXLINE,fp);               // no match, read NIJ or NI
-    word = strtok(line," \t\n\r");              // skip 2d or 3d section
+    fgets(line,MAXLINE,fp);                         // no match, read NIJ or NI
+    word = strtok(line," \t\n\r");                  // skip 2d or 3d section
     int nskip;
     if (strcmp(word,"NIJ") == 0) {
       word = strtok(NULL," \t\n\r");
       nskip = atoi(word);
       word = strtok(NULL," \t\n\r");
       nskip *= atoi(word);
-      tmp = fgets(line,MAXLINE,fp);                   // NV line
-      tmp = fgets(line,MAXLINE,fp);                   // values line
-      tmp = fgets(line,MAXLINE,fp);                   // imesh line
-      tmp = fgets(line,MAXLINE,fp);                   // jmesh line
+      fgets(line,MAXLINE,fp);                         // NV line
+      fgets(line,MAXLINE,fp);                         // values line
+      fgets(line,MAXLINE,fp);                         // imesh line
+      fgets(line,MAXLINE,fp);                         // jmesh line
     } else if (strcmp(word,"NI") == 0) {
       word = strtok(NULL," \t\n\r");
       nskip = atoi(word);
-      tmp = fgets(line,MAXLINE,fp);                   // NV line
-      tmp = fgets(line,MAXLINE,fp);                   // values line
-      tmp = fgets(line,MAXLINE,fp);                   // imesh line
+      fgets(line,MAXLINE,fp);                         // NV line
+      fgets(line,MAXLINE,fp);                         // values line
+      fgets(line,MAXLINE,fp);                         // imesh line
     } else error->one(FLERR,"Misformatted section in inflow file");
 
-    tmp = fgets(line,MAXLINE,fp);                     // blank line
-    for (i = 0; i < nskip; i++) tmp = fgets(line,MAXLINE,fp);   // value lines
+    fgets(line,MAXLINE,fp);                               // blank line
+    for (i = 0; i < nskip; i++) fgets(line,MAXLINE,fp);   // value lines
   }
 
   // read and store the matching section
 
-  tmp = fgets(line,MAXLINE,fp);                       // read NIJ or NI
+  fgets(line,MAXLINE,fp);                             // read NIJ or NI
   word = strtok(line," \t\n\r");
   if (strcmp(word,"NIJ") == 0) {
     if (dimension != 3)
@@ -578,7 +599,7 @@ void FixEmitFaceFile::read_file(char *file, char *section)
 
   // read NV line
 
-  tmp = fgets(line,MAXLINE,fp);
+  fgets(line,MAXLINE,fp);
   word = strtok(line," \t\n\r");
   if (strcmp(word,"NV") != 0)
     error->one(FLERR,"Misformatted section in inflow file");
@@ -590,7 +611,7 @@ void FixEmitFaceFile::read_file(char *file, char *section)
   // read VALUES line and convert names to which vector
 
   mesh.which = new int[mesh.nvalues];
-  tmp = fgets(line,MAXLINE,fp);
+  fgets(line,MAXLINE,fp);
   word = strtok(line," \t\n\r");
   for (i = 0; i < mesh.nvalues; i++) {
     word = strtok(NULL," \t\n\r");
@@ -614,7 +635,7 @@ void FixEmitFaceFile::read_file(char *file, char *section)
   mesh.imesh = new double[mesh.ni];
   mesh.jmesh = new double[mesh.nj];
 
-  tmp = fgets(line,MAXLINE,fp);
+  fgets(line,MAXLINE,fp);
   word = strtok(line," \t\n\r");
   if (strcmp(word,"IMESH") != 0)
     error->one(FLERR,"Misformatted section in inflow file");
@@ -628,7 +649,7 @@ void FixEmitFaceFile::read_file(char *file, char *section)
   mesh.hi[0] = mesh.imesh[mesh.ni-1];
 
   if (dimension == 3) {
-    tmp = fgets(line,MAXLINE,fp);
+    fgets(line,MAXLINE,fp);
     word = strtok(line," \t\n\r");
     if (strcmp(word,"JMESH") != 0)
       error->one(FLERR,"Misformatted section in inflow file");
@@ -645,13 +666,13 @@ void FixEmitFaceFile::read_file(char *file, char *section)
   // N = Ni by Nj values lines, store values in mesh
   // II,JJ stored with II varying fastest in 2d
 
-  tmp = fgets(line,MAXLINE,fp);    // blank line
+  fgets(line,MAXLINE,fp);    // blank line
 
   n = mesh.ni * mesh.nj;
   memory->create(mesh.values,n,mesh.nvalues,"inflow/file:values");
 
   for (i = 0; i < n; i++) {
-    tmp = fgets(line,MAXLINE,fp);
+    fgets(line,MAXLINE,fp);
     word = strtok(line," \t\n\r");
     ii = atoi(word);
     if (dimension == 3) {
@@ -803,6 +824,9 @@ int FixEmitFaceFile::interpolate(int icell)
     tasks[ntask].fraction[j] = fraction_mix[j];
     tasks[ntask].cummulative[j] = cummulative_mix[j];
     tasks[ntask].vscale[j] = vscale_mix[j];
+    // Virgile - Modif Start - 26/04/2023
+    tasks[ntask].cummulative_weighted[j] = cummulative_weighted_mix[j];
+    // Virgile - Modif End - 26/04/2023
   }
 
   // xc = centroid of cell face overlap with mesh
@@ -916,9 +940,16 @@ int FixEmitFaceFile::interpolate(int icell)
   // set entire fraction and cummulative vector via Mixture::init_fraction()
 
   if (anyfrac) {
+    // Virgile - Modif Start - 26/04/2023
+    // Baseline code:
+    //err = particle->mixture[imix]->
+    //  init_fraction(fflag,fuser,
+    //                tasks[ntask].fraction,tasks[ntask].cummulative);
+    // Modified code:
     err = particle->mixture[imix]->
       init_fraction(fflag,fuser,
-                    tasks[ntask].fraction,tasks[ntask].cummulative);
+                    tasks[ntask].fraction,tasks[ntask].cummulative,tasks[ntask].cummulative_weighted);
+    // Virgile - Modif End - 26/04/2023
     if (err)
       error->one(FLERR,"Fix inflow/file mixture fractions exceed 1.0");
   }
@@ -944,7 +975,16 @@ int FixEmitFaceFile::interpolate(int icell)
   for (isp = 0; isp < nspecies; isp++) {
     ntargetsp = frac_user *
       mol_inflow(indot,tasks[ntask].vscale[isp],tasks[ntask].fraction[isp]);
-    ntargetsp *= tasks[ntask].nrho*area*dt / fnum;
+    // Virgile - Modif Start - 25/09/23
+    // ========================================================================
+    // Modify the number of numerical particle to create per species
+    // accounting for the species weights.
+    // ========================================================================
+    // Baseline code:
+      //~ ntargetsp *= tasks[ntask].nrho*area*dt / fnum;
+    // Modified code:
+      ntargetsp *= tasks[ntask].nrho*area*dt / (fnum*particle->species[isp].specwt);
+    // Virgile - Modif End - 25/09/23
     ntargetsp /= cinfo[icell].weight;
     tasks[ntask].ntarget += ntargetsp;
     if (perspecies) tasks[ntask].ntargetsp[isp] = ntargetsp;
@@ -1070,7 +1110,16 @@ void FixEmitFaceFile::subsonic_inflow()
       mass = species[mspecies[isp]].mass;
       vscale = sqrt(2.0 * boltz * temp_thermal / mass);
       ntargetsp = mol_inflow(indot,vscale,tasks[i].fraction[isp]);
-      ntargetsp *= nrho*area*dt / fnum;
+    // Virgile - Modif Start - 25/09/23
+    // ========================================================================
+    // Modify the number of numerical particle to create per species
+    // accounting for the species weights.
+    // ========================================================================
+    // Baseline code:
+      //~ ntargetsp *= nrho*area*dt / fnum;
+    // Modified code:
+      ntargetsp *= nrho*area*dt / (fnum*particle->species[isp].specwt);
+    // Virgile - Modif End - 25/09/23
       ntargetsp /= cinfo[icell].weight;
       tasks[i].ntarget += ntargetsp;
       if (perspecies) tasks[i].ntargetsp[isp] = ntargetsp;
@@ -1148,6 +1197,13 @@ void FixEmitFaceFile::subsonic_grid()
 {
   int m,ip,np,icell,ispecies;
   double mass,masstot,gamma,ke,sign;
+  // Virgile - Modif Start - 25/09/23
+  // ========================================================================
+  // Add the total weighted mass variable to the accumulated variable to
+  // compute.
+  // ========================================================================
+  double masstot_wi;
+  // Virgile - Modif End - 25/09/23
   double nrho_cell,massrho_cell,temp_thermal_cell,press_cell;
   double mass_cell,gamma_cell,soundspeed_cell;
   double mv[4];
@@ -1172,6 +1228,9 @@ void FixEmitFaceFile::subsonic_grid()
 
     mv[0] = mv[1] = mv[2] = mv[3] = 0.0;
     masstot = gamma = 0.0;
+    // Virgile - Modif Start - 25/09/23
+    masstot_wi = 0.0;
+    // Virgile - Modif End - 25/09/23
 
     ip = cinfo[icell].first;
     while (ip >= 0) {
@@ -1183,6 +1242,9 @@ void FixEmitFaceFile::subsonic_grid()
       mv[2] += mass*v[2];
       mv[3] += mass * (v[0]*v[0]+v[1]*v[1]+v[2]*v[2]);
       masstot += mass;
+      // Virgile - Modif Start - 25/09/23
+      masstot_wi += mass*species[ispecies].specwt;
+      // Virgile - Modif End - 25/09/23
       gamma += 1.0 + 2.0 / (3.0 + species[ispecies].rotdof);
       ip = next[ip];
     }
@@ -1204,8 +1266,21 @@ void FixEmitFaceFile::subsonic_grid()
       temp_thermal_cell = tasks[i].temp_thermal;
 
     } else {
-      nrho_cell = np * fnum / cinfo[icell].volume;
-      massrho_cell = masstot * fnum / cinfo[icell].volume;
+    // Virgile - Modif Start - 25/09/23
+    // ========================================================================
+    // Using the species weighting scheme, the total number of 
+    // physical particles is given by:
+    // Sum (wi*fnum) = cinfo[icell].count_wi * fnum
+    // and the total mass by:
+    // Sum (mi*wi*fnum) = masstot_wi * fnum
+    // ========================================================================
+    // Baseline code:
+      //~ nrho_cell = np * fnum / cinfo[icell].volume;
+      //~ massrho_cell = masstot * fnum / cinfo[icell].volume;
+    // Modified code:
+      nrho_cell = cinfo[icell].count_wi * fnum / cinfo[icell].volume;
+      massrho_cell = masstot_wi * fnum / cinfo[icell].volume;
+    // Virgile - Modif End - 25/09/23
       if (np > 1) {
         ke = mv[3]/np - (mv[0]*mv[0] + mv[1]*mv[1] + mv[2]*mv[2])/np/masstot;
         temp_thermal_cell = tprefactor * ke;
@@ -1257,7 +1332,7 @@ void FixEmitFaceFile::grow_task()
   int oldmax = ntaskmax;
   ntaskmax += DELTATASK;
   tasks = (Task *) memory->srealloc(tasks,ntaskmax*sizeof(Task),
-                                    "emit/face/file:tasks");
+				    "emit/face/file:tasks");
 
   // set all new task bytes to 0 so valgrind won't complain
   // if bytes between fields are uninitialized
@@ -1278,6 +1353,9 @@ void FixEmitFaceFile::grow_task()
     tasks[i].fraction = new double[nspecies];
     tasks[i].cummulative = new double[nspecies];
     tasks[i].vscale = new double[nspecies];
+    // Virgile - Modif Start - 26/04/2023
+    tasks[i].cummulative_weighted = new double[nspecies];
+    // Virgile - Modif End - 26/04/2023
   }
 }
 

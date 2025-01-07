@@ -1,7 +1,7 @@
 /* ----------------------------------------------------------------------
    SPARTA - Stochastic PArallel Rarefied-gas Time-accurate Analyzer
-   http://sparta.github.io
-   Steve Plimpton, sjplimp@gmail.com, Michael Gallis, magalli@sandia.gov
+   http://sparta.sandia.gov
+   Steve Plimpton, sjplimp@sandia.gov, Michael Gallis, magalli@sandia.gov
    Sandia National Laboratories
 
    Copyright (2014) Sandia Corporation.  Under the terms of Contract
@@ -73,6 +73,9 @@ class FixEmitFace : public FixEmit {
   int dimension,nspecies;
   double fnum,dt;
   double *fraction,*cummulative;
+  // Virgile - Modif Start - 26/04/2023
+  double *cummulative_weighted;
+  // Virgile - Modif End - 26/04/2023
 
                          // ntask = # of tasks is stored by parent class
   Task *tasks;           // list of particle insertion tasks

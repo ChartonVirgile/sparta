@@ -1,7 +1,7 @@
 /* ----------------------------------------------------------------------
    SPARTA - Stochastic PArallel Rarefied-gas Time-accurate Analyzer
-   http://sparta.github.io
-   Steve Plimpton, sjplimp@gmail.com, Michael Gallis, magalli@sandia.gov
+   http://sparta.sandia.gov
+   Steve Plimpton, sjplimp@sandia.gov, Michael Gallis, magalli@sandia.gov
    Sandia National Laboratories
 
    Copyright (2014) Sandia Corporation.  Under the terms of Contract
@@ -50,6 +50,9 @@ class FixEmitFaceFile : public FixEmit {
   double nrho_mix,temp_thermal_mix,temp_rot_mix,temp_vib_mix;
   double *vstream_mix,*vscale_mix,*fraction_mix;
   double *cummulative_mix,*fraction_user_mix;
+  // Virgile - Modif Start - 26/04/2023
+  double *cummulative_weighted_mix;
+  // Virgile - Modif End - 26/04/2023
   int *fraction_flag_mix,*species2species_mix;
 
   Surf::Line *lines;
@@ -93,6 +96,9 @@ class FixEmitFaceFile : public FixEmit {
     double vstream[3];
     double *fraction;
     double *cummulative;
+    // Virgile - Modif Start - 26/04/2023
+    double *cummulative_weighted;
+    // Virgile - Modif End - 26/04/2023
     double *vscale;
   };
 

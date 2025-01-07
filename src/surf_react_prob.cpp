@@ -1,7 +1,7 @@
 /* ----------------------------------------------------------------------
    SPARTA - Stochastic PArallel Rarefied-gas Time-accurate Analyzer
-   http://sparta.github.io
-   Steve Plimpton, sjplimp@gmail.com, Michael Gallis, magalli@sandia.gov
+   http://sparta.sandia.gov
+   Steve Plimpton, sjplimp@sandia.gov, Michael Gallis, magalli@sandia.gov
    Sandia National Laboratories
 
    Copyright (2014) Sandia Corporation.  Under the terms of Contract
@@ -76,25 +76,21 @@ SurfReactProb::SurfReactProb(SPARTA *sparta, int narg, char **arg) :
 
 SurfReactProb::~SurfReactProb()
 {
-  if (copy) return;
-
   delete random;
 
-  if (rlist) {
-    for (int i = 0; i < maxlist_prob; i++) {
-      for (int j = 0; j < rlist[i].nreactant; j++)
-        delete [] rlist[i].id_reactants[j];
-      for (int j = 0; j < rlist[i].nproduct; j++)
-        delete [] rlist[i].id_products[j];
-      delete [] rlist[i].id_reactants;
-      delete [] rlist[i].id_products;
-      delete [] rlist[i].reactants;
-      delete [] rlist[i].products;
-      delete [] rlist[i].coeff;
-      delete [] rlist[i].id;
-    }
-    memory->destroy(rlist);
+  for (int i = 0; i < maxlist_prob; i++) {
+    for (int j = 0; j < rlist[i].nreactant; j++)
+      delete [] rlist[i].id_reactants[j];
+    for (int j = 0; j < rlist[i].nproduct; j++)
+      delete [] rlist[i].id_products[j];
+    delete [] rlist[i].id_reactants;
+    delete [] rlist[i].id_products;
+    delete [] rlist[i].reactants;
+    delete [] rlist[i].products;
+    delete [] rlist[i].coeff;
+    delete [] rlist[i].id;
   }
+  memory->destroy(rlist);
 
   memory->destroy(reactions);
   memory->destroy(indices);
@@ -159,8 +155,37 @@ int SurfReactProb::react(Particle::OnePart *&ip, int, double *,
         }
       case EXCHANGE:
         {
-          ip->ispecies = r->products[0];
-          return (list[i] + 1);
+          // This part is for speices weighitng scheme
+          // Currently only exchange from small weight into large numerical weight
+          // is avaliable 
+          // Takato Morimoto - Modif Start - 30/09/24
+          Particle::Species *species = particle->species;
+          int isp = ip->ispecies;
+          int jsp = r->products[0];
+          //jsp = jp->ispecies;
+          double w_i = species[isp].specwt;
+          double w_j = species[jsp].specwt;
+          double phi = w_j/w_i; 
+          if (phi == 1.0) {
+              ip->ispecies = r->products[0];
+              return (list[i] + 1);
+          } else if ( phi > 1.0) {
+              ip->ispecies = r->products[0];
+              if (phi*random->uniform()<1.0) {
+                ip->ispecies = r->products[0];
+                return (list[i] + 1);
+              } else {
+                ip = NULL;
+                return (list[i] + 1);
+              }
+          } else if ( phi < 1.0) {
+            error->one(FLERR,"Currently exchange from large numerical weigh into small weight is not supported");
+          }
+          // Takato Morimoto - Modif End - 30/09/24
+
+          // baseline code
+          // ip->ispecies = r->products[0];
+          // return (list[i] + 1);
         }
       case RECOMBINATION:
         {
@@ -181,13 +206,6 @@ int SurfReactProb::react(Particle::OnePart *&ip, int, double *,
 char *SurfReactProb::reactionID(int m)
 {
   return rlist[m].id;
-}
-
-/* ---------------------------------------------------------------------- */
-
-double SurfReactProb::reaction_coeff(int m)
-{
-  return rlist[m].coeff[1];
 }
 
 /* ---------------------------------------------------------------------- */
@@ -418,19 +436,12 @@ void SurfReactProb::readfile(char *fname)
     if (word[0] == 'S' || word[0] == 's') r->style = SIMPLE;
     else error->all(FLERR,"Invalid reaction style in file");
 
-    if (r->style == SIMPLE) r->ncoeff = 2;
+    if (r->style == SIMPLE) r->ncoeff = 1;
 
     for (int i = 0; i < r->ncoeff; i++) {
       word = strtok(NULL," \t\n");
-
-      // second coeff is optional
-
-      if (!word) {
-        if (i == 0) error->all(FLERR,"Invalid reaction coefficients in file");
-        else r->coeff[i] = 0.0;
-      } else {
-        r->coeff[i] = input->numeric(FLERR,word);
-      }
+      if (!word) error->all(FLERR,"Invalid reaction coefficients in file");
+      r->coeff[i] = input->numeric(FLERR,word);
     }
 
     word = strtok(NULL," \t\n");

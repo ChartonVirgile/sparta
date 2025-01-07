@@ -1,7 +1,7 @@
 /* ----------------------------------------------------------------------
    SPARTA - Stochastic PArallel Rarefied-gas Time-accurate Analyzer
-   http://sparta.github.io
-   Steve Plimpton, sjplimp@gmail.com, Michael Gallis, magalli@sandia.gov
+   http://sparta.sandia.gov
+   Steve Plimpton, sjplimp@sandia.gov, Michael Gallis, magalli@sandia.gov
    Sandia National Laboratories
 
    Copyright (2014) Sandia Corporation.  Under the terms of Contract
@@ -37,12 +37,15 @@ class ComputeGrid : public Compute {
   bigint memory_usage();
 
  protected:
-  int groupbit,imix,nvalue,ngroup,tvib_flag;
+  int groupbit,imix,nvalue,ngroup;
 
   int *value;                // keyword for each user requested value
   int *unique;               // unique keywords for tally, len = npergroup
   int npergroup;             // # of unique tally quantities per group
   int cellcount,cellmass;    // 1 if total cell count/mass is tallied
+  // Virgile - Modif Start - 02/10/23
+  int cellcountwi;
+  // Virgile - Modif End - 02/10/23
   int ntotal;                // total # of columns in tally array
   int nglocal;               // # of owned grid cells
 

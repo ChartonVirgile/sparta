@@ -1,7 +1,7 @@
 /* ----------------------------------------------------------------------
    SPARTA - Stochastic PArallel Rarefied-gas Time-accurate Analyzer
-   http://sparta.github.io
-   Steve Plimpton, sjplimp@gmail.com, Michael Gallis, magalli@sandia.gov
+   http://sparta.sandia.gov
+   Steve Plimpton, sjplimp@sandia.gov, Michael Gallis, magalli@sandia.gov
    Sandia National Laboratories
 
    Copyright (2014) Sandia Corporation.  Under the terms of Contract
@@ -33,12 +33,45 @@ class CollideVSS : public Collide {
   virtual void init();
 
   double vremax_init(int, int);
-  virtual double attempt_collision(int, int, double);
+  // Virgile - Modif Start - 20/10/23
+  // ========================================================================
+  // Add count_wi in the variable definition.
+  // ========================================================================
+  // Baseline code:
+  // virtual double attempt_collision(int, int, double);
+  // double attempt_collision(int, int, int, double);
+  // Modified code:
+  virtual double attempt_collision(int, int, double, double, double);
   double attempt_collision(int, int, int, double);
-  virtual int test_collision(int, int, int, Particle::OnePart *, Particle::OnePart *);
+  // Virgile - Modif End - 20/10/23
+
+  // Takato Morimoto - Modif Start - 20/10/23
+  // Declarations for two speices Millikan-White VT mode are made
+  struct Mwcoeff {             // Coefficient of MW-park model parameters
+    double a;
+    double b;
+  };
+  void read_param_file_tv_mw(char *);
+  protected:
+    int TV_MWflag; 
+  Mwcoeff **mwcoeff;
+  // Takato Morimoto - Modif End - 22/05/24
+  // Virgile - Modif Start - 19/12/24
+  // ========================================================================
+  // Add maxwi to the test_collision function for SWSmax filter.
+  // ========================================================================
+  // Baseline code:
+  // virtual int test_collision(int, int, int, Particle::OnePart *, Particle::OnePart *);
+  // Modified code:
+  virtual int test_collision(int, int, int, Particle::OnePart *, Particle::OnePart *, double);
+  // Virgile - Modif End - 19/12/24
   virtual void setup_collision(Particle::OnePart *, Particle::OnePart *);
+  //Takato Morimoto - Modif Start - 05/06/24
+  //virtual int perform_collision(Particle::OnePart *&, Particle::OnePart *&,
+  //                      Particle::OnePart *&);
   virtual int perform_collision(Particle::OnePart *&, Particle::OnePart *&,
-                        Particle::OnePart *&);
+                        Particle::OnePart *&, int &,int &,int &,int &);
+  //Takato Morimoto - Modif End - 05/06/24
   double extract(int, int, const char *);
 
   struct State {      // two-particle state
@@ -71,22 +104,31 @@ class CollideVSS : public Collide {
     double vibc2;
     double mr;
   };
-
+  
+ 
  protected:
-  int relaxflag,eng_exchange;
+  int relaxflag,eng_exchange; 
   double vr_indice;
   double **prefactor; // static portion of collision attempt frequency
+
+  
 
   struct State precoln;       // state before collision
   struct State postcoln;      // state after collision
 
   Params **params;             // VSS params for each species
   int nparams;                // # of per-species params read in
-
+  
+  // Virgile - Modif Start - 24/10/2024
+  // Baseline code:
+  // void SCATTER_TwoBodyScattering(Particle::OnePart *,
+	// 			 Particle::OnePart *);
+  // Modified code:
   void SCATTER_TwoBodyScattering(Particle::OnePart *,
-                                 Particle::OnePart *);
+				 Particle::OnePart *, int);
+  // Virgile - Modif End - 24/10/2024
   void EEXCHANGE_NonReactingEDisposal(Particle::OnePart *,
-                                      Particle::OnePart *);
+				      Particle::OnePart *);
   void SCATTER_ThreeBodyScattering(Particle::OnePart *,
                                    Particle::OnePart *,
                                    Particle::OnePart *);
@@ -96,9 +138,12 @@ class CollideVSS : public Collide {
 
   double sample_bl(RanKnuth *, double, double);
   double rotrel (int, double);
-  double vibrel (int, double);
-
+  // Takato Morimoto - Modif Start - 24/05/23
+  //double vibrel (int, double); //baseline code
+  double vibrel (int, int,double); //input is increased
   void read_param_file(char *);
+  // Takato Morimoto - Modif End - 24/05/23
+
   int wordparse(int, char *, char **);
 };
 
