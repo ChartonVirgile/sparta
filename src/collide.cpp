@@ -80,6 +80,7 @@ Collide::Collide(SPARTA *sparta, int, char **arg) : Pointers(sparta)
 
   count_wi_group = NULL;  // SWS
   maxwigr = NULL;         // SWS
+  ewilost_cell = NULL;    // SWS
 
   vremax = NULL;
   vremax_initial = NULL;
@@ -136,6 +137,9 @@ Collide::~Collide()
   memory->destroy(vremax);
   memory->destroy(vremax_initial);
   memory->destroy(remain);
+  memory->destroy(count_wi_group);  // SWS
+  memory->destroy(maxwigr);         // SWS
+  memory->destroy(ewilost_cell);    // SWS
   memory->destroy(nn_last_partner);
   memory->destroy(nn_last_partner_igroup);
   memory->destroy(nn_last_partner_jgroup);
@@ -215,6 +219,15 @@ void Collide::init()
   oldgroups = ngroups;
   ngroups = mixture->ngroup;
 
+  // SWS - gas-phase chemistry with the species weighting scheme is only
+  // implemented for a single-group mixture: the multi-group collision
+  // loops do not perform the SWS probabilistic creation/deletion of
+  // reactants and products (see doc/species.html)
+
+  if (particle->sws && react && ngroups > 1)
+    error->all(FLERR,"Cannot use gas-phase chemistry with the species "
+               "weighting scheme (SWS) and more than one mixture group");
+
   if (ngroups != oldgroups) {
     if (oldgroups == 1) {
       memory->destroy(plist);
@@ -259,6 +272,7 @@ void Collide::init()
     memory->destroy(maxwigr);         // SWS
     memory->destroy(vremax_initial);
     memory->destroy(remain);
+    memory->destroy(ewilost_cell);    // SWS
     nglocal = grid->nlocal;
     nglocalmax = nglocal;
     memory->create(count_wi_group, ngroups,"collide:count_wi_group");   // SWS
@@ -267,6 +281,9 @@ void Collide::init()
     memory->create(vremax_initial,ngroups,ngroups,"collide:vremax_initial");
     if (remainflag)
       memory->create(remain,nglocalmax,ngroups,ngroups,"collide:remain");
+    memory->create(ewilost_cell,nglocalmax,"collide:ewilost_cell");     // SWS
+    for (int icell = 0; icell < nglocalmax; icell++)                    // SWS
+      ewilost_cell[icell] = 0.0;
 
     for (int igroup = 0; igroup < ngroups; igroup++)
       for (int jgroup = 0; jgroup < ngroups; jgroup++)
@@ -1658,7 +1675,7 @@ template < int NEARCP > void Collide::collisions_one_SWS()
     np = cinfo[icell].count;
 
     count_wi = cinfo[icell].count_wi;     // SWS
-    Ewilost = 0.0;                        // SWS
+    Ewilost = ewilost_cell[icell];                        // SWS
     double maxwi = 0.0;                   // SWS
 
     if (np <= 1) continue;
@@ -1753,41 +1770,61 @@ template < int NEARCP > void Collide::collisions_one_SWS()
       if (reactflag) nreact_one++;
       else continue;
 
-      // if jpart destroyed: delete from plist, add particle to deletion list
-      // exit attempt loop if only single particle left
-      
-      ///////////==============================================
-      // Here, we add the particles generated in perform_collide to plist.
-      // To avoid updating nlocal changes, add them to the plist first.
-      ///////////==============================================
+      // SWS - bookkeeping for particles created/destroyed by the reaction
+      // perform_collision_SWS() appended new particles to the master
+      // particle list in this order:
+      //   p_pre (if n_pre) = un-reacted portion of the max-weight reactant
+      //   kp    (if kpart) = 3rd product particle (dissociation/ionization)
+      // n_i/n_j/n_k = # of copies of the I/J/K products to keep (0 = delete)
 
-      int i_add = 0; // to count 
-      if (n_k) {
-        i_add++;
-        if (np == npmax) {
-          npmax += DELTAPART;
-          memory->grow(plist,npmax,"collide:plist");
+      // indices in the master particle list of the appended particles
+
+      int kp_index = -1;
+      int pre_index = -1;
+      if (kpart) {
+        kp_index = particle->nlocal-1;
+        if (n_pre) pre_index = particle->nlocal-2;
+      } else if (n_pre) pre_index = particle->nlocal-1;
+
+      // add kp to plist if kept, else flag it for deletion
+      // kp was never added to plist, so deletion cannot touch plist
+
+      if (kpart) {
+        if (n_k) {
+          if (np == npmax) {
+            npmax += DELTAPART;
+            memory->grow(plist,npmax,"collide:plist");
+          }
+          if (NEARCP) set_nn(np);
+          plist[np++] = kp_index;
+          particles = particle->particles;
+        } else {
+          if (ndelete == maxdelete) {
+            maxdelete += DELTADELETE;
+            memory->grow(dellist,maxdelete,"collide:dellist");
+          }
+          dellist[ndelete++] = kp_index;
+          kpart = NULL;
         }
-        if (NEARCP) set_nn(np);
-        plist[np++] = particle->nlocal-i_add;
-        particles = particle->particles;
-      }      
+      }
+
+      // p_pre (un-reacted portion of max-weight reactant) is always kept
+
       if (n_pre) {
-        i_add++;
         if (np == npmax) {
           npmax += DELTAPART;
           memory->grow(plist,npmax,"collide:plist");
         }
         if (NEARCP) set_nn(np);
-        plist[np++] = particle->nlocal-i_add;
+        plist[np++] = pre_index;
         particles = particle->particles;
-      }           
-      ///////////==============================================
+      }
 
-      // delete from plist if i is destroyed by probability
-      //if (!ipart) {
+      // delete reactant I from plist if destroyed by probability
+      // if the last plist entry swapped into slot i is reactant J,
+      // update j to follow it
+
       if (!n_i) {
-        //printf("!!check del i \n");
         if (ndelete == maxdelete) {
           maxdelete += DELTADELETE;
           memory->grow(dellist,maxdelete,"collide:dellist");
@@ -1796,13 +1833,13 @@ template < int NEARCP > void Collide::collisions_one_SWS()
         np--;
         plist[i] = plist[np];
         if (NEARCP) nn_last_partner[i] = nn_last_partner[np];
-        if (np < 2) break;
+        if (j == np) j = i;
       }
 
-      // delete from plist if j is destroyed by probability or recombination
-      //if (!jpart) {
+      // delete reactant J from plist if destroyed
+      // by probability or recombination
+
       if (!n_j) {
-        //printf("!!check del j \n");       
         if (ndelete == maxdelete) {
           maxdelete += DELTADELETE;
           memory->grow(dellist,maxdelete,"collide:dellist");
@@ -1811,23 +1848,7 @@ template < int NEARCP > void Collide::collisions_one_SWS()
         np--;
         plist[j] = plist[np];
         if (NEARCP) nn_last_partner[j] = nn_last_partner[np];
-        if (np < 2) break;
-      }       
-
-      // If k particles are created, but become unnecessary with some probability and are deleted
-      // In reaction not envolving third species, kpart = NULL
-      if (!n_k && kpart) {
-        //printf("!!check del k \n");
-        if (ndelete == maxdelete) {
-          maxdelete += DELTADELETE;
-          memory->grow(dellist,maxdelete,"collide:dellist");
-        }
-        dellist[ndelete++] = plist[k];
-        np--;
-        plist[k] = plist[np];
-        if (NEARCP) nn_last_partner[k] = nn_last_partner[np];
-        if (np < 2) break;
-      }             
+      }
 
       // copy paste ipart particle 
       if (ipart) {
@@ -1900,12 +1921,20 @@ template < int NEARCP > void Collide::collisions_one_SWS()
           particles = particle->particles;
         }
       }
+
+      // exit attempt loop if less than 2 particles left in cell
+
+      if (np < 2) break;
     }
+
+    // SWS - store residual split-merge energy for this cell
+
+    ewilost_cell[icell] = Ewilost;
   }
 }
 
 /* ----------------------------------------------------------------------
-   NTC algorithm for multiple groups using Species Weighting Scheme, 
+   NTC algorithm for multiple groups using Species Weighting Scheme,
    loop over pairs of groups pre-compute # of attempts per group pair
 ------------------------------------------------------------------------- */
 
@@ -1913,6 +1942,7 @@ template < int NEARCP > void Collide::collisions_group_SWS()
 {
   double wi;        // SWS
   double count_wi;  // SWS
+  double maxwi;     // SWS
   int i,j,k,n,ii,jj,ip,np,isp,ng;
   int pindex,ipair,igroup,jgroup,newgroup,ngmax;
   int nattempt,reactflag;
@@ -1932,7 +1962,7 @@ template < int NEARCP > void Collide::collisions_group_SWS()
 
   for (int icell = 0; icell < nglocal; icell++) {
     count_wi = cinfo[icell].count_wi;   // SWS
-    Ewilost = 0.0;                      // SWS
+    Ewilost = ewilost_cell[icell];                      // SWS
     np = cinfo[icell].count;
     if (np <= 1) continue;
     ip = cinfo[icell].first;
@@ -1991,6 +2021,13 @@ template < int NEARCP > void Collide::collisions_group_SWS()
         realloc_nn(ngmax,nn_last_partner_jgroup);
       }
     }
+
+    // SWS - maxwi = max species weight over all particles in this cell
+    // must NOT reuse the particle-pair loop index below
+
+    maxwi = 0.0;
+    for (int igr = 0; igr < ngroups; igr++)
+      maxwi = std::max(maxwigr[igr],maxwi);
 
     // attempt = exact collision attempt count for a pair of groups
     // double loop over N^2 / 2 pairs of groups
@@ -2062,11 +2099,7 @@ template < int NEARCP > void Collide::collisions_group_SWS()
         // test if collision actually occurs
         // continue to next collision if no reaction
 
-  double maxwi=0.0;   // SWS
-  for (i = 0; i < ngroups; i++) {  // SWS
-    maxwi = std::max(maxwigr[i],maxwi);
-  }
-	if (!test_collision_SWS(icell,igroup,jgroup,ipart,jpart,maxwi)) continue;  // SWS
+        if (!test_collision_SWS(icell,igroup,jgroup,ipart,jpart,maxwi)) continue;  // SWS
 
         if (NEARCP) {
           nn_igroup[i] = j+1;
@@ -2191,6 +2224,10 @@ template < int NEARCP > void Collide::collisions_group_SWS()
         }
       }
     }
+
+    // SWS - store residual split-merge energy for this cell
+
+    ewilost_cell[icell] = Ewilost;
   }
 }
 
@@ -2230,7 +2267,7 @@ void Collide::collisions_one_ambipolar_SWS()
 
   for (int icell = 0; icell < nglocal; icell++) {
     count_wi = cinfo[icell].count_wi;   // SWS
-    Ewilost = 0.0;                      // SWS
+    Ewilost = ewilost_cell[icell];                      // SWS
     double maxwi = 0.0;                 // SWS
     np = cinfo[icell].count;
     if (np <= 1) continue;
@@ -2405,54 +2442,77 @@ void Collide::collisions_one_ambipolar_SWS()
       // must come before jpart code below since it modifies nlocal
       //==================================================================
 
-      // counter of 
-      int i_add = 0; // number of particle set as normal major particle 
-      int i_add_ele = 0; // number of particle set as electron 
-      if (n_k) {
-        i_add++;
-        particles = particle->particles;
-        ionambi = particle->eivec[particle->ewhich[index_ionambi]];
-        velambi = particle->edarray[particle->ewhich[index_velambi]];
-        if (kpart->ispecies != ambispecies) {
-          if (np == npmax) {
-            npmax += DELTAPART;
-            memory->grow(plist,npmax,"collide:plist");
-          }
-          plist[np++] = particle->nlocal-i_add;
-          // to save index of k to use later for particle creation
-          k = particle->nlocal-i_add;
-        } else {
-          if (nelectron == maxelectron) {
-            maxelectron += DELTAELECTRON;
-            elist = (Particle::OnePart *)
-              memory->srealloc(elist,maxelectron*nbytes,"collide:elist");
-          }
-          ep = &elist[nelectron];
-          memcpy(ep,kpart,nbytes);
-          ep->ispecies = ambispecies;
-          nelectron++;
-          particle->nlocal--;
-          i_add_ele++;
-        }
-      }  
+      // SWS - indices in the master particle list of particles appended by
+      // perform_collision_SWS(): p_pre first (if n_pre), then kp (if kpart)
 
-      // major particle which created through major-minor is added
-      if (n_pre) {
-        // pointer for new particle created in vss collide
-        Particle::OnePart *p_pre;
-        i_add++;
+      int kp_index = -1;
+      int pre_index = -1;
+      if (kpart) {
+        kp_index = particle->nlocal-1;
+        if (n_pre) pre_index = particle->nlocal-2;
+      } else if (n_pre) pre_index = particle->nlocal-1;
+
+      if (kpart || n_pre) {
         particles = particle->particles;
         ionambi = particle->eivec[particle->ewhich[index_ionambi]];
         velambi = particle->edarray[particle->ewhich[index_velambi]];
-        p_pre = &particle->particles[particle->nlocal-i_add];
+      }
+
+      // kp handling:
+      // heavy kp kept (n_k): add to plist, remember its particle index in k
+      // heavy kp discarded (!n_k): flag for deletion, never entered plist
+      // electron kp: create n_k copies in elist, then remove kp from the
+      //   master particle list (it is the last entry, so nlocal-- is safe;
+      //   pre_index = nlocal-2 remains valid)
+
+      if (kpart) {
+        if (kpart->ispecies != ambispecies) {
+          if (n_k) {
+            if (np == npmax) {
+              npmax += DELTAPART;
+              memory->grow(plist,npmax,"collide:plist");
+            }
+            plist[np++] = kp_index;
+            // save particle index of kp for the copy loop below
+            k = kp_index;
+          } else {
+            if (ndelete == maxdelete) {
+              maxdelete += DELTADELETE;
+              memory->grow(dellist,maxdelete,"collide:dellist");
+            }
+            dellist[ndelete++] = kp_index;
+            kpart = NULL;
+          }
+        } else {
+          for (i_loop = 0; i_loop < n_k; i_loop++) {
+            if (nelectron == maxelectron) {
+              maxelectron += DELTAELECTRON;
+              elist = (Particle::OnePart *)
+                memory->srealloc(elist,maxelectron*nbytes,"collide:elist");
+            }
+            ep = &elist[nelectron];
+            memcpy(ep,kpart,nbytes);
+            ep->ispecies = ambispecies;
+            nelectron++;
+          }
+          particle->nlocal--;
+          kpart = NULL;
+        }
+      }
+
+      // p_pre = un-reacted portion of the max-weight reactant, always kept
+      // heavy: add to plist as a neutral
+      // electron: copy to elist, flag master-list entry for deletion
+
+      if (n_pre) {
+        Particle::OnePart *p_pre = &particle->particles[pre_index];
         if (p_pre->ispecies != ambispecies) {
           if (np == npmax) {
             npmax += DELTAPART;
             memory->grow(plist,npmax,"collide:plist");
           }
-          plist[np++] = particle->nlocal-i_add+i_add_ele;
-          ionambi[particle->nlocal-i_add+i_add_ele]=0; 
-
+          plist[np++] = pre_index;
+          ionambi[pre_index] = 0;
         } else {
           if (nelectron == maxelectron) {
             maxelectron += DELTAELECTRON;
@@ -2460,13 +2520,16 @@ void Collide::collisions_one_ambipolar_SWS()
               memory->srealloc(elist,maxelectron*nbytes,"collide:elist");
           }
           ep = &elist[nelectron];
-          memcpy(ep,kpart,nbytes);
+          memcpy(ep,p_pre,nbytes);
           ep->ispecies = ambispecies;
           nelectron++;
-          particle->nlocal--;
-          i_add_ele++;
+          if (ndelete == maxdelete) {
+            maxdelete += DELTADELETE;
+            memory->grow(dellist,maxdelete,"collide:dellist");
+          }
+          dellist[ndelete++] = pre_index;
         }
-      }  
+      }
 
       // if jpart exists, was originally not an electron, now is an electron:
       //   ionization reaction converted 2 neutrals to one ion
@@ -2490,10 +2553,11 @@ void Collide::collisions_one_ambipolar_SWS()
       // Be careful when respecifying a pointer when reallocflag is 1.
       //================================================================== 
       
-      // delete needless i particle 
-      // if i particle is destoryed because of probability(n_i = 0), 
+      // delete reactant I from plist if destroyed by probability (n_i = 0)
+      // if the last plist entry swapped into slot i is reactant J,
+      // update j to follow it
+
       if (!n_i && ipart ) {
-        //printf("!!check del i \n");
         if (ndelete == maxdelete) {
           maxdelete += DELTADELETE;
           memory->grow(dellist,maxdelete,"collide:dellist");
@@ -2501,24 +2565,9 @@ void Collide::collisions_one_ambipolar_SWS()
         dellist[ndelete++] = plist[i];
         np--;
         plist[i] = plist[np];
-        ionambi[plist[i]]=ionambi[plist[np]];
-      }      
-
-      // delete needless k particle 
-      // If k particles are created, but become unnecessary with some probability and are deleted
-      // In reaction not envolving third speices, kpart = NULL
-      // therefore, n_k = 0 and kpart is not NULL is the condition
-      if (!n_k && kpart) {
-        //printf("!!check del k \n");
-        if (ndelete == maxdelete) {
-          maxdelete += DELTADELETE;
-          memory->grow(dellist,maxdelete,"collide:dellist");
-        }
-        dellist[ndelete++] = plist[k];
-        np--;
-        plist[k] = plist[np];
-        ionambi[plist[k]]=ionambi[plist[np]];
-      }       
+        // j indexes plist only when j < np_pre (else it indexes elist)
+        if (j < np_pre && j == np) j = i;
+      }
 
       // copy paste i particle 
       // i is always non ambipolar particle because of reactoin style limitation
@@ -2547,53 +2596,6 @@ void Collide::collisions_one_ambipolar_SWS()
           // ionambi is set when paticle copy pasted
           ionambi[particle->nlocal-1] = ionambi[plist[i]];
         }
-      
-      // copy paste kpart particle 
-      // k is heavy or electron
-      // a k paricle is already added. rest of them is added
-      if (kpart) {
-        // printf("!!check cp k \n");
-        if (kpart->ispecies == ambispecies) { 
-          // for ambipolar electron
-          // if n_k = 1 or 0 , the particle is already created and not going into for loop
-          for (i_loop = 0; i_loop < n_k-1 ; i_loop++) {      
-	          if (nelectron == maxelectron) {
-	            maxelectron += DELTAELECTRON;
-	            elist = (Particle::OnePart *)
-	              memory->srealloc(elist,maxelectron*nbytes,"collide:elist");
-	          }
-	          ep = &elist[nelectron];
-	          memcpy(ep,kpart,nbytes);
-	          ep->ispecies = ambispecies;
-	          nelectron++;
-          }
-        } else {
-          // for heavy particle 
-          for (i_loop = 0; i_loop < n_k-1 ; i_loop++) {
-            particles = particle->particles;     
-            int id = MAXSMALLINT*random->uniform();
-            memcpy(x,kpart->x,3*sizeof(double));
-            memcpy(v,kpart->v,3*sizeof(double));
-            int reallocflag = 
-            particle->add_particle(id,kpart->ispecies,kpart->icell,x,v,kpart->erot,kpart->evib); 
-            if (reallocflag) {
-              ionambi = particle->eivec[particle->ewhich[index_ionambi]];
-              velambi = particle->edarray[particle->ewhich[index_velambi]];
-              if(ipart) ipart = particle->particles + (ipart - particles);
-              if(jpart) jpart = particle->particles + (jpart - particles);
-              if(kpart) kpart = particle->particles + (kpart - particles);
-              kpart = particle->particles + (kpart - particles);
-          }                      
-            if (np == npmax) {
-              npmax += DELTAPART;
-              memory->grow(plist,npmax,"collide:plist");
-            }
-            plist[np++] = particle->nlocal-1;
-            particles = particle->particles;
-            ionambi[particle->nlocal-1] = ionambi[plist[k]];
-          }
-        }
-      }
       }
 
       // Particle j is not treated the same as i and k
@@ -2614,9 +2616,12 @@ void Collide::collisions_one_ambipolar_SWS()
       //   remove from plist, flag J for deletion
 
       // need to save the information of  jpart ,ambipolar electron
-      // because it will be deleted. to reproduce correctly, use jp. 
-      Particle::OnePart jp = *jpart;
-      
+      // because it will be deleted. to reproduce correctly, use jp.
+      // jpart is NULL if the reaction destroyed it (e.g. recombination)
+
+      Particle::OnePart jp;
+      if (jpart) jp = *jpart;
+
       if (jpart) {
           // printf("!!check process j \n");
           if (jspecies != ambispecies && jpart->ispecies == ambispecies) { 
@@ -2731,50 +2736,33 @@ void Collide::collisions_one_ambipolar_SWS()
 
 
       
-      // copy paste kpart particle 
-      // k is heavy or electron
-      // a k paricle is already added. rest of them is added
+      // copy paste kpart particle
+      // electron kp copies were all created in elist above (kpart = NULL),
+      // so only heavy kp copies are created here
       if (kpart) {
-        // printf("!!check cp k \n");
-        if (kpart->ispecies == ambispecies) { 
-          // for ambipolar electron
-          // if n_k = 1 or 0 , the particle is already created and not going into for loop
-          for (i_loop = 0; i_loop < n_k-1 ; i_loop++) {      
-	          if (nelectron == maxelectron) {
-	            maxelectron += DELTAELECTRON;
-	            elist = (Particle::OnePart *)
-	              memory->srealloc(elist,maxelectron*nbytes,"collide:elist");
-	          }
-	          ep = &elist[nelectron];
-	          memcpy(ep,kpart,nbytes);
-	          ep->ispecies = ambispecies;
-	          nelectron++;
+        for (i_loop = 0; i_loop < n_k-1 ; i_loop++) {
+          particles = particle->particles;
+          int id = MAXSMALLINT*random->uniform();
+          memcpy(x,kpart->x,3*sizeof(double));
+          memcpy(v,kpart->v,3*sizeof(double));
+          int reallocflag =
+          particle->add_particle(id,kpart->ispecies,kpart->icell,x,v,kpart->erot,kpart->evib);
+          if (reallocflag) {
+            ionambi = particle->eivec[particle->ewhich[index_ionambi]];
+            velambi = particle->edarray[particle->ewhich[index_velambi]];
+            kpart = particle->particles + (kpart - particles);
           }
-        } else {
-          // for heavy particle 
-          for (i_loop = 0; i_loop < n_k-1 ; i_loop++) {
-            particles = particle->particles;     
-            int id = MAXSMALLINT*random->uniform();
-            memcpy(x,kpart->x,3*sizeof(double));
-            memcpy(v,kpart->v,3*sizeof(double));
-            int reallocflag = 
-            particle->add_particle(id,kpart->ispecies,kpart->icell,x,v,kpart->erot,kpart->evib); 
-            if (reallocflag) {
-              ionambi = particle->eivec[particle->ewhich[index_ionambi]];
-              velambi = particle->edarray[particle->ewhich[index_velambi]];
-              kpart = particle->particles + (kpart - particles);
-          }                      
-            if (np == npmax) {
-              npmax += DELTAPART;
-              memory->grow(plist,npmax,"collide:plist");
-            }
-            plist[np++] = particle->nlocal-1;
-            particles = particle->particles;
-            ionambi[particle->nlocal-1] = ionambi[plist[k]];
+          if (np == npmax) {
+            npmax += DELTAPART;
+            memory->grow(plist,npmax,"collide:plist");
           }
+          plist[np++] = particle->nlocal-1;
+          particles = particle->particles;
+          // k = particle index of the original kp
+          ionambi[particle->nlocal-1] = ionambi[k];
         }
       }
-      
+
       // update particle counts
       // quit if no longer enough particles for another collision
 
@@ -2802,6 +2790,10 @@ void Collide::collisions_one_ambipolar_SWS()
     if (melectron != nelectron) {  // SWS
       error->one(FLERR,"Collisions in cell did not conserve electron count now **Currently only equal weight electrons and ions are supported.");
     }    
+
+    // SWS - store residual split-merge energy for this cell
+
+    ewilost_cell[icell] = Ewilost;
   }
 }
 
@@ -2815,6 +2807,7 @@ void Collide::collisions_group_ambipolar_SWS()
 {
   double wi;  // SWS
   double count_wi;  // SWS
+  double maxwi;  // SWS
   int i,j,k,n,ii,jj,ip,np,isp,ng;
   int pindex,ipair,igroup,jgroup,newgroup,jspecies,tmp;
   int nattempt,reactflag,nelectron;
@@ -2840,7 +2833,7 @@ void Collide::collisions_group_ambipolar_SWS()
 
   for (int icell = 0; icell < nglocal; icell++) {
     count_wi = cinfo[icell].count_wi;   // SWS
-    Ewilost = 0.0;   // SWS
+    Ewilost = ewilost_cell[icell];   // SWS
     np = cinfo[icell].count;
     if (np <= 1) continue;
     ip = cinfo[icell].first;
@@ -2922,6 +2915,13 @@ void Collide::collisions_group_ambipolar_SWS()
       ip = next[ip];
     }
 
+    // SWS - maxwi = max species weight over all particles in this cell
+    // must NOT reuse the particle-pair loop index below
+
+    maxwi = 0.0;
+    for (int igr = 0; igr < ngroups; igr++)
+      maxwi = std::max(maxwigr[igr],maxwi);
+
     // attempt = exact collision attempt count for a pair of groups
     // double loop over N^2 / 2 pairs of groups
     // temporarily include nelectrons in count for egroup
@@ -3001,11 +3001,7 @@ void Collide::collisions_group_ambipolar_SWS()
 
         // test if collision actually occurs
 
-  double maxwi=0.0;    // SWS
-  for (i = 0; i < ngroups; i++) {    // SWS
-    maxwi = std::max(maxwigr[i],maxwi);
-  }
-	if (!test_collision_SWS(icell,igroup,jgroup,ipart,jpart,maxwi)) continue;    // SWS
+        if (!test_collision_SWS(icell,igroup,jgroup,ipart,jpart,maxwi)) continue;    // SWS
 
         // if recombination reaction is possible for this IJ pair
         // pick a 3rd particle to participate and set cell number density
@@ -3243,6 +3239,10 @@ void Collide::collisions_group_ambipolar_SWS()
     }
     if (melectron != nelectron)
       error->one(FLERR,"Collisions in cell did not conserve electron count");
+
+    // SWS - store residual split-merge energy for this cell
+
+    ewilost_cell[icell] = Ewilost;
   }
 }
 
@@ -3428,6 +3428,8 @@ int Collide::pack_grid_one(int icell, char *buf, int memflag)
     if (memflag) memcpy(buf,&vremax[icell][0][0],nbytes);
     n = nbytes;
   }
+  if (memflag) memcpy(&buf[n],&ewilost_cell[icell],sizeof(double));  // SWS
+  n += sizeof(double);
 
   if (cells[icell].nsplit > 1) {
     int isplit = cells[icell].isplit;
@@ -3445,6 +3447,8 @@ int Collide::pack_grid_one(int icell, char *buf, int memflag)
         if (memflag) memcpy(&buf[n],&vremax[m][0][0],nbytes);
         n += nbytes;
       }
+      if (memflag) memcpy(&buf[n],&ewilost_cell[m],sizeof(double));  // SWS
+      n += sizeof(double);
     }
   }
 
@@ -3471,6 +3475,8 @@ int Collide::unpack_grid_one(int icell, char *buf)
     memcpy(&remain[icell][0][0],&buf[n],nbytes);
     n += nbytes;
   }
+  memcpy(&ewilost_cell[icell],&buf[n],sizeof(double));  // SWS
+  n += sizeof(double);
   nglocal++;
 
   if (cells[icell].nsplit > 1) {
@@ -3485,6 +3491,8 @@ int Collide::unpack_grid_one(int icell, char *buf)
         memcpy(&remain[m][0][0],&buf[n],nbytes);
         n += nbytes;
       }
+      memcpy(&ewilost_cell[m],&buf[n],sizeof(double));  // SWS
+      n += sizeof(double);
     }
     nglocal += nsplit;
   }
@@ -3505,6 +3513,7 @@ void Collide::copy_grid_one(int icell, int jcell)
   memcpy(&vremax[jcell][0][0],&vremax[icell][0][0],nbytes);
   if (remainflag)
     memcpy(&remain[jcell][0][0],&remain[icell][0][0],nbytes);
+  ewilost_cell[jcell] = ewilost_cell[icell];  // SWS
 }
 
 /* ----------------------------------------------------------------------
@@ -3531,6 +3540,7 @@ void Collide::add_grid_one()
       vremax[nglocal][igroup][jgroup] = vremax_initial[igroup][jgroup];
       if (remainflag) remain[nglocal][igroup][jgroup] = 0.0;
     }
+  ewilost_cell[nglocal] = 0.0;  // SWS
 
   nglocal++;
 }
@@ -3554,13 +3564,16 @@ void Collide::adapt_grid()
   memory->grow(vremax,nglocalmax,ngroups,ngroups,"collide:vremax");
   if (remainflag)
     memory->grow(remain,nglocalmax,ngroups,ngroups,"collide:remain");
+  memory->grow(ewilost_cell,nglocalmax,"collide:ewilost_cell");  // SWS
 
-  for (int icell = nglocal_old; icell < nglocal; icell++)
+  for (int icell = nglocal_old; icell < nglocal; icell++) {
     for (int igroup = 0; igroup < ngroups; igroup++)
       for (int jgroup = 0; jgroup < ngroups; jgroup++) {
         vremax[icell][igroup][jgroup] = vremax_initial[igroup][jgroup];
         if (remainflag) remain[icell][igroup][jgroup] = 0.0;
       }
+    ewilost_cell[icell] = 0.0;  // SWS
+  }
 }
 
 /* ----------------------------------------------------------------------
@@ -3574,6 +3587,7 @@ void Collide::grow_percell(int n)
   memory->grow(vremax,nglocalmax,ngroups,ngroups,"collide:vremax");
   if (remainflag)
     memory->grow(remain,nglocalmax,ngroups,ngroups,"collide:remain");
+  memory->grow(ewilost_cell,nglocalmax,"collide:ewilost_cell");  // SWS
 }
 
 /* ----------------------------------------------------------------------
